@@ -1,0 +1,188 @@
+#!/bin/bash
+set -e
+
+# --- PHẦN CẤU HÌNH ---
+SERVER_DIR=~/ai_server
+CLIENT_USER="user"
+CLIENT_PASS="12345" 
+IMAGE_NAME="ai-sandbox:latest"
+CONTAINER_NAME_PREFIX="ai-session"
+
+TS_ACCESS_TOKEN="tskey-api-kkajuSgZBN11CNTRL-fedtZyuKHySNPCobeTJKySawYb7LbNaTG"
+
+echo " thiết lập Server AI với Tailscale..."
+
+# Kiểm tra xem jq đã được cài đặt chưa (cần thiết để xử lý API)
+if ! command -v jq &> /dev/null
+then
+    echo "Đang cài đặt 'jq' để xử lý API..."
+    sudo apt-get update && sudo apt-get install -y jq
+fi
+
+# Bước 1: Cài đặt các công cụ cần thiết trên MÁY CHỦ
+# ------------------------------------------------------------------------------
+echo "## Bước 1: Cài đặt Docker và NVIDIA Container Toolkit trên máy chủ..."
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl wget gnupg lsb-release
+
+if ! command -v docker &> /dev/null; then
+    echo "Docker chưa được cài đặt. Bắt đầu cài đặt..."
+    sudo install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    sudo chmod a+r /etc/apt/keyrings/docker.gpg
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+else
+    echo "Docker đã được cài đặt."
+fi
+
+echo "Kiểm tra và cài đặt NVIDIA Container Toolkit..."
+sudo rm -f /etc/apt/sources.list.d/nvidia-*.list
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+rm cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+echo "Cài đặt môi trường máy chủ hoàn tất."
+
+# Bước 2: Tạo môi trường làm việc và định nghĩa "Sandbox"
+# ------------------------------------------------------------------------------
+echo "## Bước 2: Tạo thư mục và định nghĩa môi trường Sandbox (Dockerfile)..."
+mkdir -p "${SERVER_DIR}/work"
+mkdir -p "${SERVER_DIR}/results"
+mkdir -p "${SERVER_DIR}/cache"
+cd "${SERVER_DIR}"
+
+# Tạo Dockerfile
+cat > Dockerfile <<EOF
+FROM nvidia/cuda:12.5.1-cudnn-runtime-ubuntu22.04
+ENV DEBIAN_FRONTEND=noninteractive
+ARG USERNAME
+ARG PASSWORD
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-server \
+    python3.10 python3-pip \
+    git wget sudo curl \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null && \
+    echo "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu jammy main" | tee /etc/apt/sources.list.d/tailscale.list >/dev/null && \
+    apt-get update && apt-get install -y tailscale
+
+RUN pip3 install --no-cache-dir tensorflow==2.16.1
+
+# Tăng thời gian chờ lên 600 giây (10 phút)
+RUN pip3 install --no-cache-dir --timeout 600 \
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+RUN useradd -m -s /bin/bash \$USERNAME && \
+    echo "\$USERNAME:\$PASSWORD" | chpasswd && \
+    adduser \$USERNAME sudo && \
+    mkdir /var/run/sshd && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+EOF
+
+# Tạo entrypoint.sh
+cat > entrypoint.sh <<'EOF'
+#!/bin/bash
+set -e
+/usr/sbin/tailscaled &
+sleep 3
+if [ -n "${TS_AUTHKEY}" ]; then
+  tailscale up --ssh --auth-key "${TS_AUTHKEY}" --hostname "${TS_HOSTNAME:-ai-sandbox}" --accept-routes
+else
+  echo "CẢNH BÁO: Biến TS_AUTHKEY chưa được thiết lập."
+fi
+echo "Starting SSH server..."
+/usr/sbin/sshd -D
+EOF
+chmod +x entrypoint.sh
+echo "Định nghĩa Sandbox hoàn tất."
+
+# Bước 3: Build "Sandbox" Image
+# ------------------------------------------------------------------------------
+echo "## Bước 3: Build image Docker cho Sandbox AI..."
+sudo docker build \
+    --build-arg USERNAME=${CLIENT_USER} \
+    --build-arg PASSWORD=${CLIENT_PASS} \
+    -t ${IMAGE_NAME} .
+echo "Build image thành công!"
+
+
+# Bước 4: Tạo Script Khởi Chạy Phiên Làm Việc
+# ------------------------------------------------------------------------------
+echo "## Bước 4: Tạo script 'start_session.sh' để tự động khởi động phiên làm việc mới..."
+
+# Lưu Access Token vào một file an toàn trong thư mục server
+echo "${TS_ACCESS_TOKEN}" > .ts-access-token
+chmod 600 .ts-access-token # Chỉ chủ sở hữu mới có quyền đọc/ghi
+
+# Tạo script start_session.sh
+cat > start_session.sh <<EOF
+#!/bin/bash
+set -e
+echo "🔄 Lấy Auth Key mới từ Tailscale API..."
+# Đọc Access Token từ file
+TS_ACCESS_TOKEN=\$(cat .ts-access-token)
+
+# Gọi API của Tailscale để tạo một Auth Key mới (dùng một lần, hết hạn sau 5 phút)
+API_RESPONSE=$(curl -s -u "${TS_ACCESS_TOKEN}:" -d '{"capabilities": {"devices": {"create": {"reusable": false, "ephemeral": true, "preauthorized": true, "tags": ["tag:server"]}}}, "expirySeconds": 300}' 'https://api.tailscale.com/api/v2/tailnet/-/keys')
+# Dùng jq để lấy key từ response JSON
+TS_AUTH_KEY=\$(echo "\$API_RESPONSE" | jq -r .key)
+
+if [ "\$TS_AUTH_KEY" = "null" ] || [ -z "\$TS_AUTH_KEY" ]; then
+    echo "❌ Lỗi: Không thể tạo Auth Key từ Tailscale API. Vui lòng kiểm tra Access Token."
+    echo "API Response: \$API_RESPONSE"
+    exit 1
+fi
+
+echo "✅ Đã có Auth Key mới."
+
+# Đặt tên cho máy ảo trên mạng Tailscale
+TS_HOSTNAME="${CONTAINER_NAME_PREFIX}-\$(date +%s)"
+
+echo "🚀 Starting new AI session named '\${TS_HOSTNAME}' on Tailscale..."
+
+sudo docker run \\
+    --rm \\
+    -d \\
+    --gpus all \\
+    --name \${TS_HOSTNAME} \\
+    --cap-add=NET_ADMIN \\
+    --device=/dev/net/tun:/dev/net/tun \\
+    -e TS_AUTHKEY=\${TS_AUTH_KEY} \\
+    -e TS_HOSTNAME=\${TS_HOSTNAME} \\
+    -v "${SERVER_DIR}/work:/home/${CLIENT_USER}/work" \\
+    -v "${SERVER_DIR}/results:/home/${CLIENT_USER}/results" \\
+    -v "${SERVER_DIR}/cache:/home/${CLIENT_USER}/.cache" \\
+    ${IMAGE_NAME}
+
+echo "✅ Session is starting!"
+echo "--------------------------------------------------"
+echo "Sau vài giây, bạn có thể xem IP của container bằng lệnh: tailscale status"
+echo "Client kết nối qua Bitvise SSH Client với:"
+echo "  Host: <IP_TAILSCALE_CỦA_CONTAINER>"
+echo "  Port: 22"
+echo "  Username: ${CLIENT_USER}"
+echo "  Password: ${CLIENT_PASS}"
+echo "--------------------------------------------------"
+EOF
+chmod +x start_session.sh
+
+# --- HOÀN TẤT ---
+echo -e " CÀI ĐẶT SERVER HOÀN TẤT!"

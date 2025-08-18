@@ -1,0 +1,3 @@
+@echo off
+echo Starting AI Server Sandbox...
+wt.exe wsl --cd ~/ai_server -e ./start_session.sh
