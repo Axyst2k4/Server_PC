@@ -8,7 +8,7 @@ CLIENT_PASS="12345"
 IMAGE_NAME="ai-sandbox:latest"
 CONTAINER_NAME_PREFIX="ai-session"
 
-TS_ACCESS_TOKEN="tskey-api-kkajuSgZBN11CNTRL-fedtZyuKHySNPCobeTJKySawYb7LbNaTG"
+TS_ACCESS_TOKEN="xxxx"
 
 echo " thiết lập Server AI với Tailscale..."
 
