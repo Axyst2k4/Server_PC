@@ -8,7 +8,7 @@ CLIENT_PASS="12345"
 IMAGE_NAME="ai-sandbox:latest"
 CONTAINER_NAME_PREFIX="ai-session"
 
-TS_ACCESS_TOKEN="xxxx"
+TS_ACCESS_TOKEN="tskey-api-kkajuSgZBN11CNTRL-fedtZyuKHySNPCobeTJKySawYb7LbNaTG"
 
 echo " thiết lập Server AI với Tailscale..."
 
@@ -21,7 +21,7 @@ fi
 
 # Bước 1: Cài đặt các công cụ cần thiết trên MÁY CHỦ
 # ------------------------------------------------------------------------------
-echo "## Bước 1: Cài đặt Docker và NVIDIA Container Toolkit trên máy chủ..."
+echo "Cài đặt Docker và NVIDIA Container Toolkit trên máy chủ..."
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl wget gnupg lsb-release
 
@@ -54,7 +54,7 @@ echo "Cài đặt môi trường máy chủ hoàn tất."
 
 # Bước 2: Tạo môi trường làm việc và định nghĩa "Sandbox"
 # ------------------------------------------------------------------------------
-echo "## Bước 2: Tạo thư mục và định nghĩa môi trường Sandbox (Dockerfile)..."
+echo "## Tạo thư mục và định nghĩa môi trường Sandbox (Dockerfile)..."
 mkdir -p "${SERVER_DIR}/work"
 mkdir -p "${SERVER_DIR}/results"
 mkdir -p "${SERVER_DIR}/cache"
@@ -126,7 +126,7 @@ echo "Build image thành công!"
 
 # Bước 4: Tạo Script Khởi Chạy Phiên Làm Việc
 # ------------------------------------------------------------------------------
-echo "## Bước 4: Tạo script 'start_session.sh' để tự động khởi động phiên làm việc mới..."
+echo "## Tạo script 'start_session.sh'"
 
 # Lưu Access Token vào một file an toàn trong thư mục server
 echo "${TS_ACCESS_TOKEN}" > .ts-access-token
@@ -136,7 +136,7 @@ chmod 600 .ts-access-token # Chỉ chủ sở hữu mới có quyền đọc/ghi
 cat > start_session.sh <<EOF
 #!/bin/bash
 set -e
-echo "🔄 Lấy Auth Key mới từ Tailscale API..."
+echo "Lấy Auth Key mới từ Tailscale API..."
 # Đọc Access Token từ file
 TS_ACCESS_TOKEN=\$(cat .ts-access-token)
 
@@ -146,17 +146,17 @@ API_RESPONSE=$(curl -s -u "${TS_ACCESS_TOKEN}:" -d '{"capabilities": {"devices":
 TS_AUTH_KEY=\$(echo "\$API_RESPONSE" | jq -r .key)
 
 if [ "\$TS_AUTH_KEY" = "null" ] || [ -z "\$TS_AUTH_KEY" ]; then
-    echo "❌ Lỗi: Không thể tạo Auth Key từ Tailscale API. Vui lòng kiểm tra Access Token."
+    echo "Lỗi: Không thể tạo Auth Key từ Tailscale API. Vui lòng kiểm tra Access Token."
     echo "API Response: \$API_RESPONSE"
     exit 1
 fi
 
-echo "✅ Đã có Auth Key mới."
+echo " Đã có Auth Key mới."
 
 # Đặt tên cho máy ảo trên mạng Tailscale
 TS_HOSTNAME="${CONTAINER_NAME_PREFIX}-\$(date +%s)"
 
-echo "🚀 Starting new AI session named '\${TS_HOSTNAME}' on Tailscale..."
+echo " Starting new AI session named '\${TS_HOSTNAME}' on Tailscale..."
 
 sudo docker run \\
     --rm \\
@@ -172,7 +172,7 @@ sudo docker run \\
     -v "${SERVER_DIR}/cache:/home/${CLIENT_USER}/.cache" \\
     ${IMAGE_NAME}
 
-echo "✅ Session is starting!"
+echo " Session is starting!"
 echo "--------------------------------------------------"
 echo "Sau vài giây, bạn có thể xem IP của container bằng lệnh: tailscale status"
 echo "Client kết nối qua Bitvise SSH Client với:"
